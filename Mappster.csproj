@@ -27,7 +27,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\CascLib-src\CascLib\CascLib.csproj" />
+    <!-- Submodule, not a copy: CascLib carries no license, so it is not ours to
+         redistribute. build.bat fetches it, so a fresh clone still builds in one step. -->
+    <ProjectReference Include="ThirdParty\CascLib\CascLib\CascLib.csproj" />
   </ItemGroup>
 
 </Project>

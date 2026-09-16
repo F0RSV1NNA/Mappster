@@ -22,6 +22,7 @@ public static class Probe
 
     public static void Run()
     {
+        Gui.Session.EnsureCdnConfig(@"E:\Games\World of Warcraft", "wow");
         var casc = CASCHandler.OpenLocalStorage(@"E:\Games\World of Warcraft", "wow", null);
         ((WowRootHandler)casc.Root).SetFlags(LocaleFlags.enUS, false, false, createTree: false);
         string build = casc.Config.GetBuildInfoVariable("Version")!;

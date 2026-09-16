@@ -1,4 +1,4 @@
-# wowmaps
+# Mappster
 
 Extracts collision geometry from a **live World of Warcraft retail install** and bakes it into
 Detour navmesh tiles in TrinityCore's `.mmap` / `.mmtile` format.
@@ -38,13 +38,21 @@ project's own reader, which is not the same thing.
 - **Windows** (CASC path handling and the GUI backend are Windows-only as written)
 - **.NET 10 SDK** — `winget install --id Microsoft.DotNet.SDK.10`
 - A **World of Warcraft installation** (retail; classic products work for extraction too)
-- **CascLib source** checked out beside this repo:
-  ```
-  git clone https://github.com/WoW-Tools/CascLib.git ../CascLib-src
-  ```
+- **git** on PATH, so the build can fetch CascLib
 
-> CascLib is built **from source on purpose**. The NuGet package (1.0.23) cannot read a 12.x
-> root manifest — it throws `block.LocaleFlags == LocaleFlags.None` and nothing loads.
+That is the whole list. Clone and build:
+
+```
+git clone https://github.com/<you>/Mappster.git
+cd Mappster
+build release
+```
+
+> CascLib is built **from source on purpose**: the NuGet package (1.0.23) cannot read a 12.x
+> root manifest — it throws `block.LocaleFlags == LocaleFlags.None` and nothing loads. It is a
+> **submodule** under `ThirdParty\CascLib` rather than a copy, because CascLib publishes no
+> license and so is not ours to redistribute. `build.bat` initialises it for you, so there is
+> no separate repository to fetch by hand; `git clone --recursive` works too.
 
 ---
 
@@ -54,7 +62,7 @@ project's own reader, which is not the same thing.
 build                build Debug
 build release        build Release
 build run            build and launch
-build publish        single-file dist\MapExtract.exe
+build publish        single-file dist\Mappster.exe
 build clean          wipe bin and obj first
 build refresh        re-fetch the listfile-derived index files
 build viewer         also build the standalone native .wmesh viewer (needs MSYS2)
@@ -65,7 +73,7 @@ The first build also fetches `db2index.csv` and `transports.csv` — see
 everything after is offline.
 
 `build.bat` checks for each prerequisite and tells you how to install anything missing. It also
-refuses to build while `MapExtract.exe` is running — a running instance holds the output file
+refuses to build while `Mappster.exe` is running — a running instance holds the output file
 open, the build fails on the copy step, and the symptom is *"my code changes did nothing"*.
 
 `build publish` produces four files: the exe, `glfw3.dll`, `cimgui.dll` and `db2index.csv`.
@@ -78,7 +86,11 @@ look inside .NET's single-file extraction directory.
 
 ### GUI
 
-Run `MapExtract.exe`. Set your install path, pick a product, press **Open**.
+Run `Mappster.exe`. It looks for a World of Warcraft install on every fixed drive at
+startup; **Detect** re-runs that search, or paste the path yourself. The path is the
+folder holding `.build.info` — pointing at `Data\`, `_retail_\` or the launcher exe works
+too, since Mappster walks up to the root. Pick a product, press **Open**. A successful
+open is remembered in `mappster.cfg` beside the exe, so the next launch needs no typing.
 
 - **MAPS / LIST** — every map, filterable, with tile counts. Dungeons show `wmo`.
 - **VIEW** — load a tile, its neighbours, or a whole map at reduced detail. Fly with WASD,
@@ -93,11 +105,11 @@ Export defaults to `out\` beside the exe.
 ### Command line
 
 ```
-MapExtract --cli <install> <product> <mapId> <outDir> [maxTiles] [--yup] [--solid-only]
-MapExtract --bakemap <mapId> [adtCount]      bake one map, ADT at a time
-MapExtract --baketile <mapId> <x> <y> [r]    bake one ADT, optionally with neighbours
-MapExtract --bakeall <outDir> [threads] [maps]
-MapExtract --transportbake [count]
+Mappster --cli <install> <product> <mapId> <outDir> [maxTiles] [--yup] [--solid-only]
+Mappster --bakemap <mapId> [adtCount]      bake one map, ADT at a time
+Mappster --baketile <mapId> <x> <y> [r]    bake one ADT, optionally with neighbours
+Mappster --bakeall <outDir> [threads] [maps]
+Mappster --transportbake [count]
 ```
 
 Diagnostics, all of which print rather than assume:
@@ -157,7 +169,7 @@ build refresh
 or directly, which is what `build.bat` calls:
 
 ```
-MapExtract --makeindex <dir>
+Mappster --makeindex <dir>
 ```
 
 ### Baking
@@ -263,6 +275,14 @@ predict motion, but the live object is authoritative.
 
 ## Known issues
 
+### Missing CDN config after a patch — handled
+
+Battle.net occasionally writes a product's build config to `Data\config` without its CDN
+config. CascLib treats the gap as fatal and reports it as a bare *"could not find a part of
+the path …\Data\config\c3\9a\…"*, which reads like a broken install path. It isn't — local
+reads never need that file. Mappster now fetches the one config from the CDN named in
+`.build.info`, caches it under `cdncache\`, and says so in the status line.
+
 ### WMO Rx/Rz rotation order — unresolved
 
 For placements with non-zero `rot.X` or `rot.Z`, it is not established whether the correct
@@ -313,10 +333,17 @@ patches during a run, delete the output and start over.**
 
 | | |
 |---|---|
-| [CascLib](https://github.com/WoW-Tools/CascLib) (TOM_RUS) | CASC storage — built from source |
+| [CascLib](https://github.com/WoW-Tools/CascLib) (TOM_RUS) | CASC storage — submodule, built from source |
 | [DotRecast](https://github.com/ikpil/DotRecast) | C# port of Recast/Detour |
 | [DBCD](https://github.com/wowdev/DBCD) | DB2 reading, with definitions from WoWDBDefs |
 | [Silk.NET](https://github.com/dotnet/Silk.NET) + [ImGui.NET](https://github.com/ImGuiNET/ImGui.NET) | viewer |
 | [wow-listfile](https://github.com/wowdev/wow-listfile) | source of `db2index.csv` and `transports.csv` |
 
 File format documentation throughout comes from [wowdev.wiki](https://wowdev.wiki).
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE). No Blizzard game data is included or redistributed;
+Mappster reads the installation you already own.

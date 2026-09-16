@@ -10,6 +10,7 @@ public static class FindTable
 {
     public static void Run(string table, int from = 1_330_000, int to = 1_400_000)
     {
+        Gui.Session.EnsureCdnConfig(@"E:\Games\World of Warcraft", "wow");
         var casc = CASCHandler.OpenLocalStorage(@"E:\Games\World of Warcraft", "wow", null);
         ((WowRootHandler)casc.Root).SetFlags(LocaleFlags.enUS, false, false, createTree: false);
         string build = casc.Config.GetBuildInfoVariable("Version")!;
@@ -70,6 +71,7 @@ public static class FindTable
     /// Print a table's shape and first rows, resolved by name through the listfile.
     public static void Dump(string table, int rows = 6)
     {
+        Gui.Session.EnsureCdnConfig(@"E:\Games\World of Warcraft", "wow");
         var casc = CASCHandler.OpenLocalStorage(@"E:\Games\World of Warcraft", "wow", null);
         ((WowRootHandler)casc.Root).SetFlags(LocaleFlags.enUS, false, false, createTree: false);
         string build = casc.Config.GetBuildInfoVariable("Version")!;
@@ -97,6 +99,7 @@ public static class FindTable
     /// What kind of files does a candidate table's FileDataID column actually point at?
     public static void Inspect(int fdid, string table)
     {
+        Gui.Session.EnsureCdnConfig(@"E:\Games\World of Warcraft", "wow");
         var casc = CASCHandler.OpenLocalStorage(@"E:\Games\World of Warcraft", "wow", null);
         ((WowRootHandler)casc.Root).SetFlags(LocaleFlags.enUS, false, false, createTree: false);
         string build = casc.Config.GetBuildInfoVariable("Version")!;
@@ -131,6 +134,7 @@ public static class FindTable
     /// Sanity-check the tile -> zone name lookup on known ground.
     public static void Zones()
     {
+        Gui.Session.EnsureCdnConfig(@"E:\Games\World of Warcraft", "wow");
         var casc = CASCHandler.OpenLocalStorage(@"E:\Games\World of Warcraft", "wow", null);
         ((WowRootHandler)casc.Root).SetFlags(LocaleFlags.enUS, false, false, createTree: false);
         string build = casc.Config.GetBuildInfoVariable("Version")!;

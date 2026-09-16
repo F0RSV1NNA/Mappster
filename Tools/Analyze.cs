@@ -12,6 +12,7 @@ public static class Analyze
 
     static (CASCHandler Casc, IDBCDStorage MapDb) Open()
     {
+        Gui.Session.EnsureCdnConfig(@"E:\Games\World of Warcraft", "wow");
         var casc = CASCHandler.OpenLocalStorage(@"E:\Games\World of Warcraft", "wow", null);
         ((WowRootHandler)casc.Root).SetFlags(LocaleFlags.enUS, false, false, createTree: false);
         string build = casc.Config.GetBuildInfoVariable("Version")!;
@@ -21,7 +22,7 @@ public static class Analyze
 
     static IEnumerable<TileFiles> TilesOf(CASCHandler casc, IDBCDStorage maps, int mapId)
     {
-        if (!maps.TryGetValue(mapId, out DBCDRow row)) yield break;
+        if (!maps.TryGetValue(mapId, out DBCDRow? row) || row == null) yield break;
         int wdt = Convert.ToInt32(row["WdtFileDataID"]);
         if (wdt == 0 || !casc.FileExists(wdt)) yield break;
         List<TileFiles> tiles;
@@ -774,7 +775,7 @@ public static class Analyze
         var (casc, maps) = Open();
         foreach (int mapId in new[] { 34, 43, 90, 36, 0 })
         {
-            if (!maps.TryGetValue(mapId, out DBCDRow row)) continue;
+            if (!maps.TryGetValue(mapId, out DBCDRow? row) || row == null) continue;
             int wdt = Convert.ToInt32(row["WdtFileDataID"]);
             Console.WriteLine($"\nmap {mapId} \"{row["MapName_lang"]}\"  wdt {wdt}");
             if (wdt == 0 || !casc.FileExists(wdt)) { Console.WriteLine("  no WDT"); continue; }

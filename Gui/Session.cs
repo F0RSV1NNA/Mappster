@@ -31,31 +31,107 @@ public sealed class Session : IDisposable
     /// areaId -> zone name, for labelling tiles.
     public Dictionary<int, string> AreaNames { get; private set; } = [];
 
-    /// Products listed in the install's .build.info, e.g. wow, wow_classic_era.
-    public static List<string> Products(string install)
+    /// The install root is whichever folder holds .build.info. Accept anything near it:
+    /// a pasted path with quotes, a trailing slash, Data\, _retail_\, or the launcher exe.
+    public static string NormalizeInstall(string raw)
+    {
+        var s = Environment.ExpandEnvironmentVariables((raw ?? "").Trim().Trim('"'));
+        if (s.Length == 0) return s;
+        if (File.Exists(s)) s = Path.GetDirectoryName(s) ?? s;
+        s = s.TrimEnd('\\', '/');
+
+        for (var d = s; !string.IsNullOrEmpty(d); d = Path.GetDirectoryName(d) ?? "")
+            if (File.Exists(Path.Combine(d, ".build.info"))) return d;
+        return s;
+    }
+
+    /// Usual install locations, so a fresh run normally needs no typing at all.
+    public static string? Detect()
+    {
+        foreach (var drive in DriveInfo.GetDrives())
+        {
+            if (!drive.IsReady || drive.DriveType != DriveType.Fixed) continue;
+            foreach (var sub in new[] { "", "Games", "Program Files (x86)", "Program Files" })
+            {
+                var p = Path.Combine(drive.Name, sub, "World of Warcraft");
+                if (File.Exists(Path.Combine(p, ".build.info"))) return p;
+            }
+        }
+        return null;
+    }
+
+    /// .build.info rows as column -> value. Column names lose their "!TYPE:len" suffix and
+    /// their spaces, so "CDN Key!HEX:16" is read as "CDNKey", matching CascLib's own naming.
+    static List<Dictionary<string, string>> BuildInfo(string install)
     {
         var path = Path.Combine(install, ".build.info");
         if (!File.Exists(path)) return [];
         var lines = File.ReadAllLines(path);
         if (lines.Length < 2) return [];
 
-        var head = lines[0].Split('|').Select(h => h.Split('!')[0]).ToList();
-        int col = head.IndexOf("Product");
-        if (col < 0) return [];
-
-        return lines.Skip(1)
-                    .Select(l => l.Split('|'))
-                    .Where(p => p.Length > col)
-                    .Select(p => p[col])
-                    .Where(p => !string.IsNullOrWhiteSpace(p))
-                    .Distinct().ToList();
+        var head = lines[0].Split('|').Select(h => h.Split('!')[0].Replace(" ", "")).ToList();
+        var rows = new List<Dictionary<string, string>>();
+        foreach (var line in lines.Skip(1))
+        {
+            var cells = line.Split('|');
+            if (cells.Length < head.Count) continue;
+            var row = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < head.Count; i++) row[head[i]] = cells[i];
+            rows.Add(row);
+        }
+        return rows;
     }
+
+    /// Products listed in the install's .build.info, e.g. wow, wow_classic_era.
+    public static List<string> Products(string install) =>
+        BuildInfo(install).Select(r => r.GetValueOrDefault("Product", ""))
+                          .Where(p => !string.IsNullOrWhiteSpace(p))
+                          .Distinct().ToList();
+
+    /// Battle.net sometimes leaves a product's CDN config out of Data\config, which we saw
+    /// straight after a retail patch: the build config was written, its CDN config was not.
+    /// CascLib treats that as fatal — a raw "could not find a part of the path .../config/c3/9a/..."
+    /// — even though reading local data never touches it. Fetch the one file and hand
+    /// CascLib our copy. Returns a note for the status line, or "".
+    public static string EnsureCdnConfig(string install, string product)
+    {
+        CASCConfig.CDNConfigOverride = null;
+
+        var row = BuildInfo(install).FirstOrDefault(r => r.GetValueOrDefault("Product", "") == product);
+        if (row == null) return "";
+        var key = row.GetValueOrDefault("CDNKey", "").ToLowerInvariant();
+        if (key.Length != 32) return "";
+
+        var local = Path.Combine(install, "Data", "config", key[..2], key.Substring(2, 2), key);
+        if (File.Exists(local)) return "";
+
+        var cache = Path.Combine(AppContext.BaseDirectory, "cdncache", key);
+        if (!File.Exists(cache))
+        {
+            var host = row.GetValueOrDefault("CDNHosts", "").Split(' ').FirstOrDefault(h => h.Length > 0);
+            var cdnPath = row.GetValueOrDefault("CDNPath", "").Trim('/');
+            if (host == null || cdnPath.Length == 0)
+                return $"CDN config {key[..8]}… is missing from Data\\config and .build.info names no CDN host.";
+
+            Directory.CreateDirectory(Path.GetDirectoryName(cache)!);
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            var url = $"http://{host}/{cdnPath}/config/{key[..2]}/{key.Substring(2, 2)}/{key}";
+            File.WriteAllBytes(cache, http.GetByteArrayAsync(url).GetAwaiter().GetResult());
+        }
+
+        CASCConfig.CDNConfigOverride = cache;
+        return $"CDN config {key[..8]}… absent from Data\\config, fetched a copy.";
+    }
+
+    /// Non-fatal detail about the last Open, shown under the status line.
+    public string Note { get; private set; } = "";
 
     public void Open(string install, string product)
     {
         Close();
         lock (_casc)
         {
+            Note = EnsureCdnConfig(install, product);
             _handler = CASCHandler.OpenLocalStorage(install, product, null);
             ((WowRootHandler)_handler.Root).SetFlags(LocaleFlags.enUS, false, false, createTree: false);
             Build = _handler.Config.GetBuildInfoVariable("Version") ?? "?";
@@ -86,7 +162,7 @@ public sealed class Session : IDisposable
 
     public void Close()
     {
-        lock (_casc) { _handler = null; _extractor = null; Maps = []; Build = ""; }
+        lock (_casc) { _handler = null; _extractor = null; Maps = []; Build = ""; Note = ""; }
     }
 
     public List<TileFiles> Tiles(int wdtFdid)

@@ -1,0 +1,12 @@
+<Project>
+
+  <!-- Vendored dependencies build here rather than inheriting the root props, which
+       would put their obj\ on top of Mappster's. Nothing under ThirdParty\ is ours,
+       so its artefacts stay in a corner of Build\ that build.bat never reads. -->
+  <PropertyGroup>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)..\Build\thirdparty\bin\$(MSBuildProjectName)\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)..\Build\thirdparty\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+</Project>

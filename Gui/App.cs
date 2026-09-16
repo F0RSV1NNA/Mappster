@@ -22,7 +22,7 @@ public sealed class App
     readonly FlyCamera _camera = new();
     Renderer _renderer = null!;
 
-    string _install = @"E:\Games\World of Warcraft";
+    string _install = "";
     string _outDir = Path.Combine(AppContext.BaseDirectory, "out");
     string _filter = "";
     string _status = "Pick an install folder and press Open.";
@@ -134,8 +134,18 @@ public sealed class App
             m.Scroll += (_, s) => { if (!ImGui.GetIO().WantCaptureMouse) _camera.Dolly(s.Y); };
         }
 
+        var (install, product, outDir) = Prefs.Load();
+        _install = install.Length > 0 ? install : Session.Detect() ?? "";
+        if (outDir.Length > 0) _outDir = outDir;
+
         _products = Session.Products(_install);
         if (_products.Count == 0) _products = ["wow"];
+        int p = _products.IndexOf(product);
+        _productIdx = p >= 0 ? p : 0;
+
+        _status = _install.Length == 0
+            ? "No install found. Paste the folder that holds .build.info, then press Open."
+            : $"found {_install} — press Open.";
     }
 
     /// WASD fly, Space/Ctrl for altitude, Shift to sprint. Ignored while typing in a field.
@@ -223,7 +233,7 @@ public sealed class App
         ImGui.SetNextItemWidth(-1);
         if (ImGui.InputText("##install", ref _install, 512))
         {
-            var p = Session.Products(_install);
+            var p = Session.Products(Session.NormalizeInstall(_install));
             if (p.Count > 0) { _products = p; _productIdx = 0; }
         }
         ImGui.SetNextItemWidth(150);
@@ -231,16 +241,28 @@ public sealed class App
         ImGui.SameLine();
         if (ImGui.Button("Open", new Vector2(90, 0))) OpenStorage();
         ImGui.SameLine();
-        if (ImGui.Button("Rescan", new Vector2(90, 0)))
+        if (ImGui.Button("Detect", new Vector2(90, 0)))
         {
-            var p = Session.Products(_install);
-            _products = p.Count > 0 ? p : ["wow"];
-            _productIdx = 0;
-            _status = $"{_products.Count} product(s) in .build.info";
+            var found = Session.Detect();
+            if (found == null) _status = "no install found on any fixed drive — paste the path instead.";
+            else
+            {
+                _install = found;
+                var p = Session.Products(_install);
+                _products = p.Count > 0 ? p : ["wow"];
+                _productIdx = 0;
+                _status = $"found {_install} — press Open.";
+            }
         }
         ImGui.TextWrapped(_status);
         if (_session.Ready)
             ImGui.TextColored(new Vector4(0.55f, 0.72f, 0.45f, 1), $"{_session.Product}  build {_session.Build}");
+        if (_session.Note.Length > 0)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.85f, 0.72f, 0.35f, 1));
+            ImGui.TextWrapped(_session.Note);
+            ImGui.PopStyleColor();
+        }
 
         Gap();
         Head("EXPORT");
@@ -765,6 +787,25 @@ public sealed class App
     // ---- actions ----------------------------------------------------------
     void OpenStorage()
     {
+        // Fail with something the user can act on. CASCLib's own exception for a bad
+        // folder is a bare "could not find a part of the path", which names a path
+        // nobody typed and says nothing about what was actually wrong.
+        var dir = Session.NormalizeInstall(_install);
+        if (dir.Length == 0) { _status = "Enter the folder that holds .build.info."; return; }
+        if (!Directory.Exists(dir)) { _status = $"no such folder: {dir}"; return; }
+        if (!File.Exists(Path.Combine(dir, ".build.info")))
+        {
+            _status = $"no .build.info under {dir} — point at the install root, " +
+                      "the folder with the launcher and Data\\ in it.";
+            return;
+        }
+        _install = dir;
+
+        var products = Session.Products(dir);
+        if (products.Count == 0) { _status = ".build.info lists no products."; return; }
+        if (!_products.SequenceEqual(products)) { _products = products; _productIdx = 0; }
+        if (_productIdx < 0 || _productIdx >= _products.Count) _productIdx = 0;
+
         try
         {
             _status = "opening storage…";
@@ -772,6 +813,7 @@ public sealed class App
             _selectedMap = null; _tiles = []; _tileAt = []; _loaded.Clear();
             _renderer.Clear();
             _status = $"{_session.Maps.Count} maps";
+            Prefs.Save(_install, _products[_productIdx], _outDir);
 
             _scan?.Cancel();
             _scan = new CancellationTokenSource();

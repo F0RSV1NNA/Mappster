@@ -1,0 +1,25 @@
+# all build artefacts — bin, obj and dist live here (see Directory.Build.props)
+Build/
+viewer/build/
+
+# baked output — regenerate, never commit
+out/
+mmaps/
+*.mmap
+*.mmtile
+*.wmesh
+*.obj
+
+# The full community listfile is ~146 MB, over GitHub's 100 MB file limit, and is
+# not read at runtime. "build refresh" streams it and regenerates db2index.csv and
+# transports.csv, which are small enough to keep.
+listfile.csv
+
+# local state
+mappster.cfg
+cdncache/
+# CascLib's own CDN cache, created next to the working directory
+cache/
+imgui.ini
+debug.log
+*.user

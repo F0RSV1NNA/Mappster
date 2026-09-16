@@ -93,7 +93,7 @@ public static class NavWriter
         }
 
         var navMesh = new DtNavMesh();
-        var st = navMesh.Init(ref p, 6);
+        var st = navMesh.Init(in p, 6);
         if (st.Failed()) return (0, 0, "navmesh init failed");
 
         int tiles = 0, polys = 0;

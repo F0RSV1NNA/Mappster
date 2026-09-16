@@ -20,6 +20,8 @@ public static class Cli
         int mapFdid    = int.Parse(Environment.GetEnvironmentVariable("MAPDB2_FDID") ?? "1349477");
         int liquidFdid = int.Parse(Environment.GetEnvironmentVariable("LIQUIDTYPE_FDID") ?? "1371380");
 
+        var note = Gui.Session.EnsureCdnConfig(install, product);
+        if (note.Length > 0) Console.WriteLine(note);
         var casc = CASCHandler.OpenLocalStorage(install, product, null);
         ((WowRootHandler)casc.Root).SetFlags(LocaleFlags.enUS, false, false, createTree: false);
         string build = casc.Config.GetBuildInfoVariable("Version")!;

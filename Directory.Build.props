@@ -1,0 +1,16 @@
+<Project>
+
+  <!-- Keep every build artefact under Build\ so the repo root stays readable.
+       BaseIntermediateOutputPath has to be set here rather than in the .csproj:
+       NuGet restore reads it before the project file is evaluated. -->
+  <PropertyGroup>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)Build\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)Build\obj\</BaseIntermediateOutputPath>
+
+    <!-- Build\ sits inside the project folder, so the SDK's **\*.cs glob otherwise picks
+         up the generated AssemblyInfo.cs from the previous build and every assembly
+         attribute is declared twice (CS0579). Only bites on the second build. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);Build\**;ThirdParty\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+</Project>

@@ -1,15 +1,15 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-rem  build.bat  -  build the wowmaps extractor + tile viewer
+rem  build.bat  -  build the Mappster extractor + tile viewer
 rem
 rem    build              build Debug (what "dotnet run" uses)
 rem    build release      build Release
 rem    build run          build Debug and launch the GUI
 rem    build release run  build Release and launch the GUI
 rem    build viewer       also build the standalone native .wmesh viewer
-rem    build clean        delete bin and obj first
-rem    build publish      one-file dist\MapExtract.exe, nothing else to copy
+rem    build clean        delete the Build folder first
+rem    build publish      one-file dist\Mappster.exe, nothing else to copy
 rem    build publish run  publish and launch it
 rem    build refresh      re-fetch db2index.csv + transports.csv from the listfile
 
@@ -40,7 +40,7 @@ goto args
 rem  publish is always Release; saying "Debug" in the banner would be a lie
 if defined DOPUBLISH set "CONFIG=Release (publish)"
 echo.
-echo  wowmaps build  [%CONFIG%]
+echo  Mappster build  [%CONFIG%]
 if defined DOPUBLISH set "CONFIG=Release"
 echo  ---------------------------------------------------------------
 
@@ -98,22 +98,39 @@ if not defined SDK10 (
 echo  [ok] .NET SDK
 
 rem ---------------------------------------------------------------- CascLib
-rem  NuGet's CascLib cannot read a 12.x root manifest, so we build TOM_RUS's
-rem  source as a sibling checkout instead.
-if not exist "%ROOT%..\CascLib-src\CascLib\CascLib.csproj" (
+rem  NuGet's CascLib cannot read a 12.x root manifest, so we build TOM_RUS's source.
+rem  It is a submodule rather than a copy in this repo: CascLib ships no license, so
+rem  it is not ours to redistribute. Fetch it here so a fresh clone is still one step.
+set "CASCPROJ=%ROOT%ThirdParty\CascLib\CascLib\CascLib.csproj"
+if not exist "%CASCPROJ%" (
+  where git >nul 2>&1
+  if errorlevel 1 (
+    echo.
+    echo  [X] CascLib is missing and git is not on PATH to fetch it.
+    echo      Install git, or clone it yourself into:
+    echo          %ROOT%ThirdParty\CascLib
+    echo      from https://github.com/WoW-Tools/CascLib.git
+    echo.
+    exit /b 1
+  )
+  echo  [..] fetching CascLib
+  if exist "%ROOT%.git" (
+    rem  --force because we only get here when the checkout is missing or broken;
+    rem  without it git sees the submodule as up to date and restores nothing.
+    git -C "%ROOT:~0,-1%" submodule update --init --force --recursive ThirdParty/CascLib
+  ) else (
+    rem  downloaded as a zip rather than cloned: no submodule to init
+    git clone --depth 1 https://github.com/WoW-Tools/CascLib.git "%ROOT%ThirdParty\CascLib"
+  )
+)
+if not exist "%CASCPROJ%" (
   echo.
-  echo  [X] CascLib source not found next to this folder.
-  echo      Expected: %ROOT%..\CascLib-src\CascLib\CascLib.csproj
-  echo.
-  echo      This project builds CascLib from source on purpose: the NuGet
-  echo      package is too old to read a 12.x CASC root manifest.
-  echo.
-  echo      Get it with:
-  echo          git clone https://github.com/WoW-Tools/CascLib.git "%ROOT%..\CascLib-src"
+  echo  [X] CascLib could not be fetched. Check your connection, then clone it into:
+  echo          %ROOT%ThirdParty\CascLib
   echo.
   exit /b 1
 )
-echo  [ok] CascLib source
+echo  [ok] CascLib
 
 rem ---------------------------------------------------------------- listfile
 rem  db2index.csv and transports.csv are slices of wowdev's community listfile, not
@@ -130,27 +147,26 @@ if defined NEEDINDEX (
 )
 
 rem ------------------------------------------------------------ file locks
-rem  A running instance holds bin\%CONFIG%\net10.0\MapExtract.exe open and the
+rem  A running instance holds bin\%CONFIG%\net10.0\Mappster.exe open and the
 rem  build fails on the copy step - which looks like the code silently not
 rem  changing. Catch it up front.
 rem  Full paths: a Git Bash / MSYS shell on PATH shadows find and findstr.
-"%SystemRoot%\System32\tasklist.exe" /FI "IMAGENAME eq MapExtract.exe" 2>nul | "%SystemRoot%\System32\findstr.exe" /I /C:"MapExtract.exe" >nul
+"%SystemRoot%\System32\tasklist.exe" /FI "IMAGENAME eq Mappster.exe" 2>nul | "%SystemRoot%\System32\findstr.exe" /I /C:"Mappster.exe" >nul
 if not errorlevel 1 (
   echo.
-  echo  [X] MapExtract.exe is already running and holds the output file open.
+  echo  [X] Mappster.exe is already running and holds the output file open.
   echo      Close the app window, then run this again.
   echo.
   echo      Or stop it now with:
-  echo          taskkill /IM MapExtract.exe /F
+  echo          taskkill /IM Mappster.exe /F
   echo.
   exit /b 1
 )
 
 rem ---------------------------------------------------------------- build
 if defined DOCLEAN (
-  echo  [..] cleaning bin and obj
-  if exist "%ROOT%bin" rmdir /s /q "%ROOT%bin"
-  if exist "%ROOT%obj" rmdir /s /q "%ROOT%obj"
+  echo  [..] cleaning Build\
+  if exist "%ROOT%Build" rmdir /s /q "%ROOT%Build"
 )
 
 pushd "%ROOT%"
@@ -158,12 +174,12 @@ if defined DOPUBLISH (
   rem  Single file for the managed side. Native glfw3/cimgui stay as loose files:
   rem  Silk.NET resolves natives itself and does not look inside .NET's self-extract
   rem  directory, so embedding them makes the window platform "not applicable".
-  echo  [..] publishing single-file to dist\
+  echo  [..] publishing single-file to Build\dist\
   echo.
-  if exist "%ROOT%dist" rmdir /s /q "%ROOT%dist"
+  if exist "%ROOT%Build\dist" rmdir /s /q "%ROOT%Build\dist"
   dotnet publish -c Release -r win-x64 --self-contained false ^
       -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=false ^
-      -p:DebugType=none -o "%ROOT%dist" --nologo -v minimal
+      -p:DebugType=none -o "%ROOT%Build\dist" --nologo -v minimal
   set "RC=!ERRORLEVEL!"
 ) else (
   echo  [..] building %CONFIG%
@@ -192,19 +208,19 @@ if defined NEEDINDEX (
   echo  [..] fetching db2index.csv + transports.csv from the community listfile
   if defined DOPUBLISH (
     rem  %ROOT% ends in a backslash; "%ROOT%" would escape the closing quote
-    "%ROOT%dist\MapExtract.exe" --makeindex "%ROOT:~0,-1%"
+    "%ROOT%Build\dist\Mappster.exe" --makeindex "%ROOT:~0,-1%"
   ) else (
-    "%ROOT%bin\%CONFIG%\net10.0\MapExtract.exe" --makeindex "%ROOT:~0,-1%"
+    "%ROOT%Build\bin\%CONFIG%\net10.0\Mappster.exe" --makeindex "%ROOT:~0,-1%"
   )
   if exist "%ROOT%db2index.csv" (
     rem  the build copied the old or absent files already, so refresh the outputs
-    if exist "%ROOT%bin\%CONFIG%\net10.0" (
-      copy /y "%ROOT%db2index.csv" "%ROOT%bin\%CONFIG%\net10.0\" >nul 2>&1
-      copy /y "%ROOT%transports.csv" "%ROOT%bin\%CONFIG%\net10.0\" >nul 2>&1
+    if exist "%ROOT%Build\bin\%CONFIG%\net10.0" (
+      copy /y "%ROOT%db2index.csv" "%ROOT%Build\bin\%CONFIG%\net10.0\" >nul 2>&1
+      copy /y "%ROOT%transports.csv" "%ROOT%Build\bin\%CONFIG%\net10.0\" >nul 2>&1
     )
-    if exist "%ROOT%dist" (
-      copy /y "%ROOT%db2index.csv" "%ROOT%dist\" >nul 2>&1
-      copy /y "%ROOT%transports.csv" "%ROOT%dist\" >nul 2>&1
+    if exist "%ROOT%Build\dist" (
+      copy /y "%ROOT%db2index.csv" "%ROOT%Build\dist\" >nul 2>&1
+      copy /y "%ROOT%transports.csv" "%ROOT%Build\dist\" >nul 2>&1
     )
   ) else (
     echo  [X] index fetch failed - DB2 lookups will fall back to hardcoded ids.
@@ -214,11 +230,11 @@ if defined NEEDINDEX (
 
 echo.
 if defined DOPUBLISH (
-  echo  [ok] published  dist\MapExtract.exe
+  echo  [ok] published  Build\dist\Mappster.exe
   echo       plus glfw3.dll, cimgui.dll, db2index.csv
-  echo       exports default to dist\out\
+  echo       exports default to Build\dist\out\
 ) else (
-  echo  [ok] built  bin\%CONFIG%\net10.0\MapExtract.exe
+  echo  [ok] built  Build\bin\%CONFIG%\net10.0\Mappster.exe
 )
 
 rem ----------------------------------------------------- native viewer (opt)
@@ -253,9 +269,9 @@ if defined DORUN (
   echo.
   echo  [..] launching
   if defined DOPUBLISH (
-    start "" "%ROOT%dist\MapExtract.exe"
+    start "" "%ROOT%Build\dist\Mappster.exe"
   ) else (
-    start "" "%ROOT%bin\%CONFIG%\net10.0\MapExtract.exe"
+    start "" "%ROOT%Build\bin\%CONFIG%\net10.0\Mappster.exe"
   )
 )
 
