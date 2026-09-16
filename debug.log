@@ -1,0 +1,16 @@
+[9/16/2026 4:09:20 PM]: CASCHandlerBase: loading CDN indices...
+[9/16/2026 4:09:21 PM]: CDNIndexHandler.Initialize() completed in 00:00:01.4172354
+[9/16/2026 4:09:21 PM]: FileIndexHandler() completed in 00:00:00.0046886
+[9/16/2026 4:09:21 PM]: CASCHandlerBase: loaded 5093524 CDN indexes
+[9/16/2026 4:09:21 PM]: CASCHandlerBase: loading local indices...
+[9/16/2026 4:09:21 PM]: LocalIndexHandler: loaded 2079196 indexes
+[9/16/2026 4:09:21 PM]: LocalIndexHandler.Initialize() completed in 00:00:00.4138951
+[9/16/2026 4:09:21 PM]: CASCHandlerBase: loaded 2079196 local indexes
+[9/16/2026 4:09:21 PM]: CASCHandler: loading encoding data...
+[9/16/2026 4:09:24 PM]: new EncodingHandler() completed in 00:00:02.8403303
+[9/16/2026 4:09:24 PM]: CASCHandler: loaded 2874085 encoding data
+[9/16/2026 4:09:24 PM]: CASCHandler: loading root data...
+[9/16/2026 4:09:25 PM]: new RootHandler() completed in 00:00:01.1770567
+[9/16/2026 4:09:25 PM]: CASCHandler: loaded 1931507 root data
+[9/16/2026 4:09:25 PM]: new CASCHandler() completed in 00:00:05.8612120
+[9/16/2026 4:09:25 PM]: WowRootHandler::SetFlags() completed in 00:00:00.0000970
