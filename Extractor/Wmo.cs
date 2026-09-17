@@ -28,7 +28,12 @@ public static class Wmo
     public record DoodadSet(uint Start, uint Count);
 
     public record Root(uint[] GroupIds, Vector3 BoxMin, Vector3 BoxMax,
-                       List<DoodadSet> Sets, List<DoodadDef> Doodads);
+                       List<DoodadSet> Sets, List<DoodadDef> Doodads, uint Flags)
+    {
+        /// MOHD 0x4: MOGP.liquidType is a real LiquidType.db2 id. Without it the value
+        /// is a legacy index and means something else entirely.
+        public bool LiquidTypeIsDbcId => (Flags & 0x4) != 0;
+    }
 
     /// Group file ids come from the root's GFID chunk (name-based lookup is long gone).
     public static Root ReadRoot(Stream rootWmo, bool quatWFirst = false)
@@ -40,6 +45,7 @@ public static class Wmo
         var sets = new List<DoodadSet>();
         var defs = new List<DoodadDef>();
         uint[] modi = [];
+        uint mohdFlags = 0;
 
         while (br.BaseStream.Position + 8 <= br.BaseStream.Length)
         {
@@ -53,6 +59,7 @@ public static class Wmo
                     br.ReadUInt32(); nGroups = br.ReadUInt32();
                     br.BaseStream.Position += 28;               // through wmoID
                     lo = Vec3(br); hi = Vec3(br);
+                    mohdFlags = br.ReadUInt16();                // flags sit after the box
                     break;
                 case "GFID":
                     gfids = new uint[size / 4];
@@ -94,7 +101,7 @@ public static class Wmo
 
         // GFID covers every doodad set variant; the first nGroups entries are the base set.
         return new Root(nGroups > 0 && gfids.Length >= nGroups ? gfids[..(int)nGroups] : gfids,
-                        lo, hi, sets, defs);
+                        lo, hi, sets, defs, mohdFlags);
     }
 
     static Vector3 Vec3(BinaryReader br) => new(br.ReadSingle(), br.ReadSingle(), br.ReadSingle());
@@ -114,7 +121,7 @@ public static class Wmo
         Antiportal   = 0x4000000,
     }
 
-    public record GroupData(Mesh Solid, Mesh Liquid, uint GroupLiquid, uint Flags);
+    public record GroupData(Mesh Solid, Mesh Liquid, uint GroupLiquid, uint Flags, Vector3 LiquidBase);
 
     /// Collision triangles from one group file, in WMO model space, plus any interior liquid.
     public static GroupData ReadGroup(Stream group)
@@ -125,6 +132,7 @@ public static class Wmo
         var movt = new List<Vector3>();
         var liquid = Mesh.Empty;
         uint groupLiquid = 0, flags = 0;
+        Vector3 liquidBase = default;
 
         while (br.BaseStream.Position + 8 <= br.BaseStream.Length)
         {
@@ -156,14 +164,14 @@ public static class Wmo
                         movt.Add(new Vector3(br.ReadSingle(), br.ReadSingle(), br.ReadSingle()));
                     break;
                 case "MLIQ":
-                    liquid = Liquid.ReadMliq(br.ReadBytes((int)size));
+                    (liquid, liquidBase) = Liquid.ReadMliq(br.ReadBytes((int)size));
                     break;
             }
 
             br.BaseStream.Position = next;
         }
 
-        if (movi.Length == 0 || movt.Count == 0) return new GroupData(Mesh.Empty, liquid, groupLiquid, flags);
+        if (movi.Length == 0 || movt.Count == 0) return new GroupData(Mesh.Empty, liquid, groupLiquid, flags, liquidBase);
 
         var indices = new List<int>(movi.Length);
         for (int t = 0; t < movi.Length / 3; t++)
@@ -171,7 +179,7 @@ public static class Wmo
             if (t < mopy.Length && (mopy[t] & Mopy.NoCollision) != 0) continue;
             indices.Add(movi[t * 3]); indices.Add(movi[t * 3 + 1]); indices.Add(movi[t * 3 + 2]);
         }
-        return new GroupData(new Mesh(movt, indices), liquid, groupLiquid, flags);
+        return new GroupData(new Mesh(movt, indices), liquid, groupLiquid, flags, liquidBase);
     }
 }
 

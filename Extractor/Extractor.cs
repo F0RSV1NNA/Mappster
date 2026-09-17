@@ -230,7 +230,7 @@ public sealed class Extractor(CASCHandler casc, Func<ushort, LiquidClass> classi
 
         var verts = new List<Vector3>(); var idx = new List<int>();
         var lverts = new List<Vector3>(); var lidx = new List<int>();
-        var root = new Wmo.Root([], default, default, [], []);
+        var root = new Wmo.Root([], default, default, [], [], 0);
         uint groupLiquid = 0;
 
         if (casc.FileExists((int)fdid))
@@ -240,7 +240,7 @@ public sealed class Extractor(CASCHandler casc, Func<ushort, LiquidClass> classi
             {
                 if (g == 0 || !casc.FileExists((int)g)) continue;
                 using var gs = casc.OpenFile((int)g);
-                var (solid, liquid, gl, flags) = Wmo.ReadGroup(gs);
+                var (solid, liquid, gl, flags, _) = Wmo.ReadGroup(gs);
 
                 // Antiportals are invisible occlusion volumes and unreachable groups are
                 // sealed off; both would bake as phantom floors and walls. They are ~11% of

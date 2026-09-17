@@ -30,6 +30,26 @@ if (args.Length > 0 && args[0] == "--tiltedspots")
                         args.Length > 3 ? float.Parse(args[3]) : 600f);
     return;
 }
+if (args.Length > 0 && args[0] == "--mliqfit")
+{
+    Analyze.MliqFit(args.Skip(1).Select(int.Parse).ToArray());
+    return;
+}
+if (args.Length > 0 && args[0] == "--liquidfit")
+{
+    // --liquidfit <mapId> row,col row,col ...
+    var want = args.Skip(2).Select(a => a.Split(','))
+                   .Where(p => p.Length == 2)
+                   .Select(p => (int.Parse(p[0]), int.Parse(p[1]))).ToArray();
+    Analyze.LiquidFit(int.Parse(args[1]), want);
+    return;
+}
+if (args.Length > 0 && args[0] == "--liquidmap")
+{
+    Analyze.LiquidMap(args.Length > 1 ? int.Parse(args[1]) : 0,
+                      args.Length > 2 ? int.Parse(args[2]) : 14);
+    return;
+}
 if (args.Length > 0 && args[0] == "--rotsearch")
 {
     Analyze.RotSearch(args.Length > 1 ? int.Parse(args[1]) : 3000);

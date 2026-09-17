@@ -92,23 +92,29 @@ public static class Liquid
         transpose ? new Vector3(k.PosX - gx * Terrain.Unit, k.PosY - gy * Terrain.Unit, z)
                   : new Vector3(k.PosX - gy * Terrain.Unit, k.PosY - gx * Terrain.Unit, z);
 
-    /// MLIQ inside a WMO group, in WMO model space (Z up).
-    public static Wmo.Mesh ReadMliq(byte[] d)
+    /// MLIQ inside a WMO group, in WMO model space (Z up). Returns the sheet and the
+    /// header's base corner.
+    ///
+    /// baseCoords positions the grid in X and Y only. Each vertex's height is already
+    /// absolute in model space, so it replaces base.Z rather than adding to it — add it
+    /// and the sheet sinks by base.Z, which in a deep interior like Ironforge or Blackrock
+    /// drops the lava clean through the floor.
+    public static (Wmo.Mesh Mesh, Vector3 Base) ReadMliq(byte[] d)
     {
-        if (d.Length < 30) return Wmo.Mesh.Empty;
+        if (d.Length < 30) return (Wmo.Mesh.Empty, default);
         int xv = BitConverter.ToInt32(d, 0), yv = BitConverter.ToInt32(d, 4);
         int xt = BitConverter.ToInt32(d, 8), yt = BitConverter.ToInt32(d, 12);
         var base_ = new Vector3(BitConverter.ToSingle(d, 16), BitConverter.ToSingle(d, 20), BitConverter.ToSingle(d, 24));
-        if (xv <= 0 || yv <= 0 || xt <= 0 || yt <= 0) return Wmo.Mesh.Empty;
+        if (xv <= 0 || yv <= 0 || xt <= 0 || yt <= 0) return (Wmo.Mesh.Empty, base_);
 
         int vertBase = 30, flagBase = vertBase + xv * yv * 8;
-        if (flagBase + xt * yt > d.Length) return Wmo.Mesh.Empty;
+        if (flagBase + xt * yt > d.Length) return (Wmo.Mesh.Empty, base_);
 
         var verts = new List<Vector3>(xv * yv);
         for (int y = 0; y < yv; y++)
             for (int x = 0; x < xv; x++)
-                verts.Add(base_ + new Vector3(x * Terrain.Unit, y * Terrain.Unit,
-                                              BitConverter.ToSingle(d, vertBase + (y * xv + x) * 8 + 4)));
+                verts.Add(new Vector3(base_.X + x * Terrain.Unit, base_.Y + y * Terrain.Unit,
+                                      BitConverter.ToSingle(d, vertBase + (y * xv + x) * 8 + 4)));
 
         var idx = new List<int>();
         for (int y = 0; y < yt; y++)
@@ -119,6 +125,6 @@ public static class Liquid
                 idx.AddRange([a, b, e, a, e, c]);
             }
 
-        return new Wmo.Mesh(verts, idx);
+        return (new Wmo.Mesh(verts, idx), base_);
     }
 }

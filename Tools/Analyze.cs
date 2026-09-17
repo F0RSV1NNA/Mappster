@@ -423,6 +423,8 @@ public static class Analyze
         if (r.SpanTally.Length > 0) Console.WriteLine("  spans by area: " + r.SpanTally);
         Console.WriteLine("  polys by area: " + string.Join("  ", r.PolysByArea.OrderByDescending(k => k.Value)
             .Select(k => $"{NavBake.AreaName(k.Key)}({k.Key}) {k.Value:N0}")));
+        Console.WriteLine($"  submerged ground: {r.SubmergedPolys:N0} polys" +
+                          (r.UnderHazardPolys > 0 ? $", {r.UnderHazardPolys:N0} of them under magma/slime" : ""));
 
         string dir = Path.Combine(AppContext.BaseDirectory, "mmaps");
         if (Directory.Exists(dir)) Directory.Delete(dir, true);   // else the round-trip counts stale files
@@ -636,6 +638,268 @@ public static class Analyze
             Console.Write($"  {label[bk],-12} {cnt[bk],7:N0}");
             for (int i = 0; i < cand.Length; i++) Console.Write($" {sum[bk, i] / cnt[bk],17:F4}");
             Console.WriteLine();
+        }
+    }
+
+    /// Is WMO interior liquid at the right height?
+    ///
+    /// A pool is inside the building, so its sheet must lie within the WMO's own MOHD
+    /// bounding box — and near the floor of the group holding it, not below everything.
+    /// Scores the sheet as read against the same sheet with MLIQ's base.Z added back,
+    /// which is what this did before: heights in MLIQ are absolute, so adding the base
+    /// sinks every interior pool by that amount.
+    public static void MliqFit(params int[] mapIds)
+    {
+        var (casc, maps) = Open();
+        if (mapIds.Length == 0) mapIds = [0, 230, 409, 229];
+
+        Console.WriteLine($"\n{"wmo",9} {"group",9} {"base.Z",9} {"MOHD box Z",18} " +
+                          $"{"as read",18} {"+base.Z (old)",18}  verdict");
+
+        foreach (int mapId in mapIds)
+        {
+            var placements = new List<WmoPlacement>();
+            var tiles = TilesOf(casc, maps, mapId).ToList();
+            if (tiles.Count == 0)
+            {
+                int wdt = maps.TryGetValue(mapId, out DBCDRow? mr) && mr != null ? Convert.ToInt32(mr["WdtFileDataID"]) : 0;
+                if (wdt != 0 && casc.FileExists(wdt))
+                {
+                    using var ws = casc.OpenFile(wdt);
+                    if (Wdt.ReadGlobalWmo(ws) is { } g) placements.Add(g);
+                }
+            }
+            else
+                foreach (var t in tiles.Where(t => t.Obj0 != 0))
+                {
+                    try { using var os = casc.OpenFile((int)t.Obj0); (_, var w, _) = Obj0.Read(os); placements.AddRange(w); }
+                    catch { }
+                }
+
+            var seen = new HashSet<uint>();
+            int okNew = 0, okOld = 0, total = 0;
+
+            foreach (var m in placements)
+            {
+                if (!seen.Add(m.NameId) || !casc.FileExists((int)m.NameId)) continue;
+                Wmo.Root root;
+                try { using var rs = casc.OpenFile((int)m.NameId); root = Wmo.ReadRoot(rs); }
+                catch { continue; }
+
+                foreach (uint g in root.GroupIds)
+                {
+                    if (g == 0 || !casc.FileExists((int)g)) continue;
+                    Wmo.GroupData gd;
+                    try { using var gs = casc.OpenFile((int)g); gd = Wmo.ReadGroup(gs); }
+                    catch { continue; }
+                    if (gd.Liquid.Verts.Count == 0) continue;
+
+                    float loNew = gd.Liquid.Verts.Min(v => v.Z), hiNew = gd.Liquid.Verts.Max(v => v.Z);
+                    float loOld = loNew + gd.LiquidBase.Z, hiOld = hiNew + gd.LiquidBase.Z;
+                    bool inNew = loNew >= root.BoxMin.Z - 1 && hiNew <= root.BoxMax.Z + 1;
+                    bool inOld = loOld >= root.BoxMin.Z - 1 && hiOld <= root.BoxMax.Z + 1;
+                    total++; if (inNew) okNew++; if (inOld) okOld++;
+
+                    if (total <= 10)
+                        Console.WriteLine($"{m.NameId,9} {g,9} {gd.LiquidBase.Z,9:F1} " +
+                                          $"{$"[{root.BoxMin.Z:F0}..{root.BoxMax.Z:F0}]",18} " +
+                                          $"{$"[{loNew:F0}..{hiNew:F0}]",18} {$"[{loOld:F0}..{hiOld:F0}]",18}  " +
+                                          $"{(inNew ? "in" : "OUT")} / {(inOld ? "in" : "OUT")}");
+                }
+            }
+            if (total > 0)
+                Console.WriteLine($"  map {mapId}: {total} liquid groups — inside the box: " +
+                                  $"as read {okNew * 100.0 / total:F1}%, old {okOld * 100.0 / total:F1}%\n");
+        }
+    }
+
+    /// Does liquid land where the terrain can hold it?
+    ///
+    /// A liquid sheet fills a basin, so almost every liquid vertex should sit at or above
+    /// the ground directly under it, and close to it. Index the MH2O cell grid the wrong
+    /// way round and the sheet lands rotated within its chunk — draped over ridges, with
+    /// the pool itself somewhere it should not be. Scores the convention in use against
+    /// its transpose on the tiles given.
+    public static void LiquidFit(int mapId, params (int Row, int Col)[] want)
+    {
+        var (casc, maps) = Open();
+        string build = casc.Config.GetBuildInfoVariable("Version")!;
+        var dbd = new GithubDBDProvider();
+        var liquidDb = new DBCD.DBCD(new One(casc, Names.Db2("LiquidType", 1371380)), dbd)
+                           .Load("LiquidType", build);
+        var bank = liquidDb.Values.ToDictionary(r => (ushort)r.ID, r => (LiquidClass)Convert.ToByte(r["SoundBank"]));
+        LiquidClass Classify(ushort id) => bank.TryGetValue(id, out var c) ? c : LiquidClass.Unknown;
+
+        var tiles = TilesOf(casc, maps, mapId).ToDictionary(t => (t.X, t.Y));
+        Console.WriteLine($"\n{"tile",-10} {"liquid",8} {"convention",12} {"matched",8} {"above",7} {"mean |dz|",10}");
+
+        foreach (var (row, col) in want)
+        {
+            if (!tiles.TryGetValue((row, col), out var t) || t.Root == 0) { Console.WriteLine($"[{row},{col}] missing"); continue; }
+
+            Adt.TerrainData data;
+            try { using var s = casc.OpenFile((int)t.Root); data = Adt.ReadTerrain(s); }
+            catch { continue; }
+            if (data.Mh2o.Length == 0) { Console.WriteLine($"[{row},{col}] no MH2O"); continue; }
+
+            // ground height on a Unit-sized lattice, from the terrain mesh itself
+            var ground = new Dictionary<(int, int), float>();
+            var tv = new List<Vector3>(); var ti = new List<int>();
+            foreach (var k in data.Chunks) Terrain.Emit(k, tv, ti, transpose: false);
+            foreach (var v in tv)
+            {
+                var key = ((int)MathF.Round(v.X / Terrain.Unit), (int)MathF.Round(v.Y / Terrain.Unit));
+                if (!ground.TryGetValue(key, out float z) || v.Z < z) ground[key] = v.Z;
+            }
+
+            foreach (bool transpose in new[] { false, true })
+            {
+                var lv = new List<Vector3>(); var li = new List<int>(); var lc = new List<LiquidClass>();
+                Liquid.EmitMh2o(data.Mh2o, data.Chunks, lv, li, lc, Classify, transpose);
+
+                int matched = 0, above = 0; double dz = 0;
+                foreach (var v in lv)
+                {
+                    var key = ((int)MathF.Round(v.X / Terrain.Unit), (int)MathF.Round(v.Y / Terrain.Unit));
+                    if (!ground.TryGetValue(key, out float g)) continue;
+                    matched++;
+                    if (v.Z >= g - 0.5f) above++;
+                    dz += Math.Abs(v.Z - g);
+                }
+                Console.WriteLine($"[{row,2},{col,2}]{"",-4} {lv.Count,8:N0} {(transpose ? "transposed" : "in use"),12} " +
+                                  $"{matched,8:N0} {(matched > 0 ? above * 100.0 / matched : 0),6:F1}% " +
+                                  $"{(matched > 0 ? dz / matched : 0),10:F2}");
+            }
+        }
+    }
+
+    /// Where is the magma, and is it classified correctly?
+    ///
+    /// Two separate code paths produce lava. Open-air lava — Burning Steppes, the Searing
+    /// Gorge floor — is terrain MH2O, classified through LiquidType.db2. Lava inside
+    /// Blackrock Mountain and its kin is a WMO's MLIQ, classified from the MOGP group
+    /// header instead. When interior lava goes missing, the second path is the suspect.
+    public static void LiquidMap(int mapId = 0, int top = 14)
+    {
+        var (casc, maps) = Open();
+        string build = casc.Config.GetBuildInfoVariable("Version")!;
+        var dbd = new GithubDBDProvider();
+        var liquidDb = new DBCD.DBCD(new One(casc, Names.Db2("LiquidType", 1371380)), dbd)
+                           .Load("LiquidType", build);
+        var bank = liquidDb.Values.ToDictionary(r => (ushort)r.ID, r => (LiquidClass)Convert.ToByte(r["SoundBank"]));
+        var liquidName = liquidDb.Values.ToDictionary(r => (ushort)r.ID, r => r["Name"]?.ToString() ?? "");
+        LiquidClass Classify(ushort id) => bank.TryGetValue(id, out var c) ? c : LiquidClass.Unknown;
+
+        var zones = new Zones(casc, build);
+        var tiles = TilesOf(casc, maps, mapId).ToList();
+        Console.WriteLine($"\nmap {mapId}: {tiles.Count:N0} tiles\n");
+
+        // ---- terrain MH2O ------------------------------------------------------
+        var terrainHits = new List<(LiquidClass C, int Tris, Vector3 At)>();
+        foreach (var t in tiles.Where(t => t.Root != 0))
+        {
+            Adt.TerrainData data;
+            try { using var s = casc.OpenFile((int)t.Root); data = Adt.ReadTerrain(s); }
+            catch { continue; }
+            if (data.Mh2o.Length == 0) continue;
+
+            var v = new List<Vector3>(); var idx = new List<int>(); var cls = new List<LiquidClass>();
+            Liquid.EmitMh2o(data.Mh2o, data.Chunks, v, idx, cls, Classify, transpose: false);
+
+            // centroid, not the first triangle: a pool's first vertex is on its edge, and
+            // edges of a tile land in the neighbouring zone as often as not
+            foreach (var g in cls.Select((c, i) => (c, i)).GroupBy(p => p.c))
+            {
+                var mid = g.Aggregate(Vector3.Zero, (a, p) => a + v[idx[p.i * 3]]) / g.Count();
+                terrainHits.Add((g.Key, g.Count(), mid));
+            }
+        }
+
+        Console.WriteLine("terrain MH2O, triangles by class:");
+        foreach (var g in terrainHits.GroupBy(h => h.C).OrderByDescending(g => g.Sum(h => h.Tris)))
+            Console.WriteLine($"  {g.Key,-8} {g.Sum(h => h.Tris),9:N0} tris across {g.Count(),4} chunks");
+
+        foreach (var want in new[] { LiquidClass.Magma, LiquidClass.Slime })
+        {
+            var hits = terrainHits.Where(h => h.C == want).OrderByDescending(h => h.Tris).Take(top).ToList();
+            Console.WriteLine($"\n  biggest {want} pools on the surface:");
+            if (hits.Count == 0) { Console.WriteLine("    none"); continue; }
+            foreach (var h in hits)
+            {
+                var z = zones.Locate(mapId, h.At);
+                Console.WriteLine($"    {(z?.Zone ?? "?"),-24} {(z is { } s ? $"{s.X,5:F1},{s.Y,5:F1}" : "      —"),-13} " +
+                                  $"{h.Tris,6:N0} tris   world {h.At.X,7:F0},{h.At.Y,7:F0},{h.At.Z,6:F0}  " +
+                                  $"tile [{NavBake.RowOf(h.At.X)},{NavBake.ColOf(h.At.Y)}]");
+            }
+        }
+
+        // ---- WMO MLIQ ----------------------------------------------------------
+        var raw = new Dictionary<(uint Type, bool Dbc), (int Groups, int Tris)>();
+        var wmoHits = new List<(LiquidClass C, uint Type, bool Dbc, int Tris, Vector3 At, uint Fdid)>();
+        var seen = new HashSet<uint>();
+
+        // Tile-less maps — most classic dungeons, Molten Core and Blackrock among them —
+        // are a single WMO in the WDT, so their lava is only reachable this way.
+        var placements = new List<WmoPlacement>();
+        if (tiles.Count == 0)
+        {
+            int wdt = maps.TryGetValue(mapId, out DBCDRow? mr) && mr != null ? Convert.ToInt32(mr["WdtFileDataID"]) : 0;
+            if (wdt != 0 && casc.FileExists(wdt))
+            {
+                using var ws = casc.OpenFile(wdt);
+                if (Wdt.ReadGlobalWmo(ws) is { } g) placements.Add(g);
+            }
+            Console.WriteLine($"  tile-less map: {placements.Count} global WMO");
+        }
+        else
+            foreach (var t in tiles.Where(t => t.Obj0 != 0))
+            {
+                try { using var os = casc.OpenFile((int)t.Obj0); (_, var w, _) = Obj0.Read(os); placements.AddRange(w); }
+                catch { }
+            }
+
+        {
+            foreach (var m in placements)
+            {
+                if (!seen.Add(m.NameId) || !casc.FileExists((int)m.NameId)) continue;
+                Wmo.Root root;
+                try { using var rs = casc.OpenFile((int)m.NameId); root = Wmo.ReadRoot(rs); }
+                catch { continue; }
+
+                foreach (uint g in root.GroupIds)
+                {
+                    if (g == 0 || !casc.FileExists((int)g)) continue;
+                    Wmo.GroupData gd;
+                    try { using var gs = casc.OpenFile((int)g); gd = Wmo.ReadGroup(gs); }
+                    catch { continue; }
+                    if (gd.Liquid.TriCount == 0) continue;
+
+                    var key = (gd.GroupLiquid, root.LiquidTypeIsDbcId);
+                    var cur = raw.GetValueOrDefault(key);
+                    raw[key] = (cur.Groups + 1, cur.Tris + gd.Liquid.TriCount);
+
+                    var world = new Vector3(Terrain.Origin - m.Pos.Z, Terrain.Origin - m.Pos.X, m.Pos.Y);
+                    wmoHits.Add((Classify((ushort)gd.GroupLiquid), gd.GroupLiquid,
+                                 root.LiquidTypeIsDbcId, gd.Liquid.TriCount, world, m.NameId));
+                }
+            }
+        }
+
+        Console.WriteLine($"\nWMO MLIQ: {wmoHits.Count:N0} groups with liquid, {seen.Count:N0} distinct WMOs scanned");
+        Console.WriteLine($"\n  {"MOGP.liquidType",16} {"MOHD 0x4",9} {"groups",7} {"tris",9}  as LiquidType.db2");
+        foreach (var kv in raw.OrderByDescending(kv => kv.Value.Tris).Take(24))
+        {
+            var (type, isDbc) = kv.Key;
+            string named = liquidName.TryGetValue((ushort)type, out var nm) ? $"{Classify((ushort)type)} \"{nm}\"" : "not a valid id";
+            Console.WriteLine($"  {type,16} {(isDbc ? "set" : "CLEAR"),9} {kv.Value.Groups,7:N0} {kv.Value.Tris,9:N0}  {named}");
+        }
+
+        Console.WriteLine($"\n  biggest interior pools, by what we currently call them:");
+        foreach (var h in wmoHits.OrderByDescending(h => h.Tris).Take(top))
+        {
+            var z = zones.Locate(mapId, h.At);
+            Console.WriteLine($"    {h.C,-8} type {h.Type,-4} {(z?.Zone ?? "?"),-24} " +
+                              $"{(z is { } s ? $"{s.X,5:F1},{s.Y,5:F1}" : "      —"),-13} {h.Tris,6:N0} tris  wmo {h.Fdid}");
         }
     }
 

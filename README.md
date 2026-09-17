@@ -118,6 +118,9 @@ Diagnostics, all of which print rather than assume:
 ```
 --tiltedspots <n> <minSize> <maxSize>   tilted WMOs, with zone and in-game map coords
 --where <mapId> <x> <y> <z>             zone, map coords and tile for a world position
+--liquidmap <mapId> [n]                 where water/ocean/magma/slime are, and as what
+--liquidfit <mapId> row,col ...         does terrain liquid sit in the terrain, or over it
+--mliqfit [mapId ...]                   is WMO interior liquid inside its own building
 --extents [n]                           score the placement transform against MODF extents
 --rotsearch [n]                         all 48 rotation conventions, best first
 --dungeons        global-WMO maps and their world bounds
@@ -243,11 +246,29 @@ information.
 | slime | 7 | `0x10` | new |
 | ocean | 6 | `0x20` | new |
 
-**Suggested query filter: `0x25`** (ground | water | ocean), leaving magma and slime out so a
-path never routes through them.
+Two further bits mark **ground that lies under a liquid surface**:
 
-> If your consumer uses TrinityCore's old `0x0D` mask it will **exclude ocean** (so it won't
-> swim the sea) and **include magma** (so it will happily path through lava). Widen it.
+| flag | value | meaning |
+|---|---|---|
+| submerged | `0x40` | walkable ground beneath any liquid — a seabed, a lake floor |
+| under hazard | `0x80` | that liquid is magma or slime |
+
+These exist because liquid in the client files is a *surface*, never a volume. The floor of a
+lake is ordinary terrain and Recast bakes it as ordinary walkable ground, so nothing in the
+geometry distinguishes a seabed from a road. Measured on real tiles: the Stormwind ADT has
+**864** submerged ground polygons, and the Burning Steppes lava tile has **567 — every one of
+them under magma**.
+
+**Suggested query filter: include `0x25`** (ground | water | ocean), **exclude `0x80`**.
+
+- Underwater objectives work by *adding* `0x40` to the include mask for that query. The
+  polygons are already in the mesh; the flag is what lets you opt in deliberately.
+- `0x80` should stay excluded always. Without it a path runs along the bottom of a lava lake,
+  because that floor is perfectly walkable geometry.
+
+> These flags are **additive**, so a consumer that ignores them behaves exactly as before —
+> including walking the lava bed. TrinityCore's old `0x0D` mask also **excludes ocean** (so it
+> won't swim the sea) and **includes magma**. Widen it and add the exclude.
 
 Liquid keeps its class regardless of slope — a flat water surface is still swimmable.
 
@@ -319,6 +340,29 @@ magnitude worse. The `rotation Rx*Ry*Rz` toggle is gone — there is nothing lef
 A self-consistent test proves nothing. This is the second time on this project that a
 comparison between two wrong answers looked like evidence; the first was the mirrored-world
 bug, which passed its own validation at 96%.
+
+### WMO interior liquid height — fixed
+
+`MLIQ`'s `baseCoords` positions the liquid grid in **X and Y only**. Each vertex carries its
+own height, already absolute in model space, so it *replaces* `base.Z` rather than adding to
+it. Adding it sank every interior pool by exactly `base.Z`.
+
+Shallow WMOs barely moved, which is why this survived so long. Deep interiors were wrecked:
+Molten Core's lava sat at `[-458..-229]` against a building whose floor is at `-234` — 224
+yards underground. In game you would fall through the lava; in the bake, the hazard was
+nowhere near the walkable surface.
+
+`--mliqfit` scores liquid sheets against their WMO's own MOHD box:
+
+| map | liquid groups | inside the box, as read | with `base.Z` added (old) |
+|---|---|---|---|
+| Eastern Kingdoms | 133 | **99.2%** | 44.4% |
+| Molten Core | 5 | **100%** | 20.0% |
+| Blackrock Depths | 6 | **100%** | 16.7% |
+| Blackrock Spire | 2 | **100%** | 50.0% |
+
+Terrain `MH2O` was never affected — it is a separate path, and `--liquidfit` confirms it sits
+in the terrain correctly (88–93% of vertices on ground, versus 69–83% transposed).
 
 ### Recast's 16-bit vertex ceiling
 

@@ -47,6 +47,14 @@ public static class NavBake
     public const int FlagSlime = 0x10;
     public const int FlagOcean = 0x20;
 
+    // A lake bottom is ordinary ground geometry and Recast bakes it like any other floor,
+    // so without these a path crosses the seabed exactly as if it were a road — the
+    // opposite of being unable to reach it. These mark ground that lies under a liquid
+    // surface, so a consumer can require submerged movement deliberately instead of
+    // wandering into it. Detour poly flags are 16 bit; 0x40 and 0x80 are free.
+    public const int FlagSubmerged = 0x40;
+    public const int FlagUnderHazard = 0x80;
+
     /// Everything a swimmer may enter; hazards deliberately absent.
     public const int FlagsWalkable = FlagGround | FlagWater | FlagOcean;
     public const int FlagsHazard = FlagMagma | FlagSlime;
@@ -102,6 +110,8 @@ public static class NavBake
         public string FailMessage = "";
         /// Polygons per Recast area id, so the liquid split is visible not assumed.
         public readonly Dictionary<int, int> PolysByArea = [];
+        /// Walkable ground that lies under a liquid surface — seabeds, lake floors.
+        public int SubmergedPolys, UnderHazardPolys;
         public string SpanTally = "";
         public long NavDataBytes;
         public List<NavTile> Tiles = [];
@@ -224,6 +234,7 @@ public static class NavBake
         };
 
         var geom = new SoupGeom(verts, tris, bmin, bmax);
+        var ceiling = liquidTris > 0 ? new LiquidCeiling(soup) : null;
         var ctx = new RcContext();
         var builder = new RcBuilder();
 
@@ -294,7 +305,7 @@ public static class NavBake
                 if (pmesh == null || pmesh.npolys == 0) continue;
 
                 var t0 = System.Diagnostics.Stopwatch.StartNew();
-                var data = ToDetour(pmesh, dmesh, s, tx, tz, tmin, tmax);
+                var data = ToDetour(pmesh, dmesh, s, tx, tz, tmin, tmax, ceiling, r);
                 detourMs += t0.Elapsed.TotalMilliseconds;
                 if (data == null) { r.FailedTiles++; continue; }
 
@@ -329,14 +340,29 @@ public static class NavBake
         }
         r.Ok = true;
         r.Message = $"{r.TileCount} tiles, {r.PolyCount:N0} polys";
+        if (r.SubmergedPolys > 0)
+            r.Message += $", {r.SubmergedPolys:N0} submerged" +
+                         (r.UnderHazardPolys > 0 ? $" ({r.UnderHazardPolys:N0} under hazard)" : "");
         return r;
     }
 
     static DtMeshData? ToDetour(RcPolyMesh pmesh, RcPolyMeshDetail? dmesh, Settings s,
-                                int tx, int tz, RcVec3f tmin, RcVec3f tmax)
+                                int tx, int tz, RcVec3f tmin, RcVec3f tmax,
+                                LiquidCeiling? ceiling, Result r)
     {
         var flags = new int[pmesh.npolys];
-        for (int i = 0; i < pmesh.npolys; i++) flags[i] = FlagOfArea(pmesh.areas[i]);
+        for (int i = 0; i < pmesh.npolys; i++)
+        {
+            flags[i] = FlagOfArea(pmesh.areas[i]);
+            if (ceiling is not { Any: true } || pmesh.areas[i] != AreaGround) continue;
+
+            var mid = PolyCentre(pmesh, i, s);
+            var (under, hazard) = ceiling.Query(mid.X, mid.Y, mid.Z);
+            if (!under) continue;
+            flags[i] |= FlagSubmerged;
+            r.SubmergedPolys++;
+            if (hazard) { flags[i] |= FlagUnderHazard; r.UnderHazardPolys++; }
+        }
 
         var option = new DtNavMeshCreateParams
         {
@@ -355,6 +381,23 @@ public static class NavBake
 
         try { return DtNavMeshBuilder.CreateNavMeshData(option); }
         catch { return null; }
+    }
+
+    /// Polygon centre in world space (Z-up). pmesh vertices are cell indices from bmin.
+    static Vector3 PolyCentre(RcPolyMesh pmesh, int poly, Settings s)
+    {
+        int nvp = pmesh.nvp;
+        float x = 0, y = 0, z = 0; int n = 0;
+        for (int j = 0; j < nvp; j++)
+        {
+            int v = pmesh.polys[poly * nvp * 2 + j];
+            if (v == 0xffff) break;                       // RC_MESH_NULL_IDX
+            x += pmesh.bmin.X + pmesh.verts[v * 3] * s.CellSize;
+            y += pmesh.bmin.Y + pmesh.verts[v * 3 + 1] * s.CellHeight;
+            z += pmesh.bmin.Z + pmesh.verts[v * 3 + 2] * s.CellSize;
+            n++;
+        }
+        return n == 0 ? Vector3.Zero : FromRc(x / n, y / n, z / n);
     }
 
     static bool SlopeOk(float[] verts, int[] tris, int t, float slopeCos)
@@ -394,6 +437,55 @@ public static class NavBake
                 r.DebugIndices.Add(b); r.DebugIndices.Add(b + 1); r.DebugIndices.Add(b + 2);
                 r.DebugAreas.Add(area);
             }
+        }
+    }
+
+    /// Highest liquid surface over each patch of world, and whether it is a hazard.
+    ///
+    /// Liquid in the client files is a surface, never a volume, so nothing in the geometry
+    /// says "this floor is underwater" — the seabed rasterizes as plain walkable ground.
+    /// This is the only thing that can tell them apart afterwards.
+    sealed class LiquidCeiling
+    {
+        const float Cell = 2f;
+        readonly Dictionary<(int, int), (float Z, bool Hazard)> _top = [];
+
+        public bool Any => _top.Count > 0;
+
+        public LiquidCeiling(Extractor.Soup soup)
+        {
+            for (int t = 0; t < soup.LiquidIndices.Count / 3; t++)
+            {
+                var a = soup.LiquidVerts[soup.LiquidIndices[t * 3]];
+                var b = soup.LiquidVerts[soup.LiquidIndices[t * 3 + 1]];
+                var c = soup.LiquidVerts[soup.LiquidIndices[t * 3 + 2]];
+                var cls = t < soup.LiquidTriClass.Count ? soup.LiquidTriClass[t] : LiquidClass.Water;
+                bool hazard = cls is LiquidClass.Magma or LiquidClass.Slime;
+                float z = MathF.Max(a.Z, MathF.Max(b.Z, c.Z));
+
+                // liquid quads are ~4 yd across, so a triangle covers a handful of cells
+                int x0 = (int)MathF.Floor(MathF.Min(a.X, MathF.Min(b.X, c.X)) / Cell);
+                int x1 = (int)MathF.Floor(MathF.Max(a.X, MathF.Max(b.X, c.X)) / Cell);
+                int y0 = (int)MathF.Floor(MathF.Min(a.Y, MathF.Min(b.Y, c.Y)) / Cell);
+                int y1 = (int)MathF.Floor(MathF.Max(a.Y, MathF.Max(b.Y, c.Y)) / Cell);
+
+                for (int x = x0; x <= x1; x++)
+                    for (int y = y0; y <= y1; y++)
+                    {
+                        var key = (x, y);
+                        if (!_top.TryGetValue(key, out var cur) || z > cur.Z) _top[key] = (z, hazard);
+                        else if (hazard && MathF.Abs(z - cur.Z) < 1f) _top[key] = (cur.Z, true);
+                    }
+            }
+        }
+
+        /// Is a point below the liquid over it, and is that liquid lethal?
+        public (bool Under, bool Hazard) Query(float worldX, float worldY, float worldZ)
+        {
+            var key = ((int)MathF.Floor(worldX / Cell), (int)MathF.Floor(worldY / Cell));
+            if (!_top.TryGetValue(key, out var top)) return (false, false);
+            // half a yard of slack: the surface sheet and a shoreline floor meet at the same height
+            return worldZ < top.Z - 0.5f ? (true, top.Hazard) : (false, false);
         }
     }
 
