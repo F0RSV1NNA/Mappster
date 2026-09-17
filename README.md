@@ -14,7 +14,7 @@ thing that produces a plausible-looking but subtly wrong mesh, and numbers alone
 
 ## Status
 
-Built and tested against **retail 12.1.0.69587** (Midnight). It reads whatever product is in
+Built and tested against **retail 12.1.0.69814** (Midnight). It reads whatever product is in
 your `.build.info`, so it should follow the live client forward — but format changes do happen,
 and the notes below say which parts are most likely to break.
 
@@ -25,11 +25,12 @@ and the notes below say which parts are most likely to break.
 | Dungeons and raids (global-WMO maps) | working |
 | Navmesh bake → `.mmap` / `.mmtile` | working, round-trips into a live `dtNavMesh` |
 | Transports (boats, zeppelins, elevators) | **mesh only** — see [Transports](#transports) |
-| WMO `Rx`/`Rz` rotation order | **unresolved** — see [Known issues](#known-issues) |
+| WMO `Rx`/`Rz` rotation order | resolved — `Rz·Rx·Ry`, confirmed in game |
 | Server-side gameobjects (doors, gates) | not included, and not in client files |
 
-Nothing here has been validated against a running bot. Everything is verified against this
-project's own reader, which is not the same thing.
+Geometry placement is confirmed against the running client. The navmesh itself has not been
+validated against a running bot — it round-trips into a live `dtNavMesh`, which is not the
+same thing as pathing on it.
 
 ---
 
@@ -115,7 +116,10 @@ Mappster --transportbake [count]
 Diagnostics, all of which print rather than assume:
 
 ```
---tiltedspots <n> <minSize> <maxSize>   where to stand in game to settle Rx/Rz
+--tiltedspots <n> <minSize> <maxSize>   tilted WMOs, with zone and in-game map coords
+--where <mapId> <x> <y> <z>             zone, map coords and tile for a world position
+--extents [n]                           score the placement transform against MODF extents
+--rotsearch [n]                         all 48 rotation conventions, best first
 --dungeons        global-WMO maps and their world bounds
 --transports      transport models and their collision sizes
 --groups          MOGP flag census across many WMOs
@@ -283,23 +287,38 @@ the path …\Data\config\c3\9a\…"*, which reads like a broken install path. It
 reads never need that file. Mappster now fetches the one config from the CDN named in
 `.build.info`, caches it under `cdncache\`, and says so in the status line.
 
-### WMO Rx/Rz rotation order — unresolved
+### WMO Rx/Rz rotation order — resolved
 
-For placements with non-zero `rot.X` or `rot.Z`, it is not established whether the correct
-order is `Rz·Ry·Rx` or `Rx·Ry·Rz`. **`Rz·Ry·Rx` is currently used.**
+**`Rz(rot.Z) · Rx(rot.X) · Ry(rot.Y)`** — roll, then pitch, then yaw. Settled against MODF
+extents and then confirmed in game. Worth recording because the method mattered more than
+the answer.
 
-The file data cannot settle it. MODF extents were tested three ways — containment, bounding-box
-match from vertices, and bounding-box match from the MOHD box — plus nine candidate orderings
-including axis-swapped and negated variants. Per-placement, `Rz·Ry·Rx` wins **53.5%** of the
-time. That is a coin flip.
+For a long time this looked unsettleable. Two candidates, `Rz·Ry·Rx` and `Rx·Ry·Rz`, were
+scored against each other across 4,002 tilted placements; the first won 53.5% of the time.
+A coin flip. The conclusion drawn was that the file data could not decide it.
 
-It is not negligible: the two orderings displace geometry by **12.7 yd on average and up to
-252 yd**, across ~4,000 placements.
+The flaw was comparing candidates *to each other*. `--extents` instead scores each against
+zero, bucketed by how tilted the placement is, which exposed two things at once: untilted
+placements land on **0.0003**, proving the oracle and the base transform are sound — and
+every candidate drifts to **0.05–0.09** as tilt grows. They were all wrong, which is exactly
+why none could beat the others.
 
-**To settle it**, run `--tiltedspots` for a list of tilted objects with world coordinates, fly
-to one in game, then load the same tile in the viewer and toggle **`rotation Rx*Ry*Rz`**.
-Compare *which way it leans*, not where it sits — position is nearly identical under both, only
-the tilt axis changes.
+`--rotsearch` then enumerated all 48 combinations of axis assignment, sign and order:
+
+| tilt | count | `Ry(y)` only | `Rz·Ry·Rx` (old) | `Rz·Rx·Ry` (correct) |
+|---|---|---|---|---|
+| none | 14,867 | 0.0003 | 0.0003 | 0.0003 |
+| < 5° | 1,189 | 0.0272 | 0.0140 | **0.0007** |
+| 5–20° | 2,084 | 0.0698 | 0.0323 | **0.0004** |
+| 20–60° | 1,085 | 0.1263 | 0.0639 | **0.0001** |
+| 60°+ | 775 | 0.1726 | 0.0860 | **0.0002** |
+
+The winner holds at the untilted floor across every magnitude; the runner-up is two orders of
+magnitude worse. The `rotation Rx*Ry*Rz` toggle is gone — there is nothing left to toggle.
+
+A self-consistent test proves nothing. This is the second time on this project that a
+comparison between two wrong answers looked like evidence; the first was the mirrored-world
+bug, which passed its own validation at 96%.
 
 ### Recast's 16-bit vertex ceiling
 

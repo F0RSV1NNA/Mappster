@@ -30,6 +30,22 @@ if (args.Length > 0 && args[0] == "--tiltedspots")
                         args.Length > 3 ? float.Parse(args[3]) : 600f);
     return;
 }
+if (args.Length > 0 && args[0] == "--rotsearch")
+{
+    Analyze.RotSearch(args.Length > 1 ? int.Parse(args[1]) : 3000);
+    return;
+}
+if (args.Length > 0 && args[0] == "--extents")
+{
+    Analyze.Extents(args.Length > 1 ? int.Parse(args[1]) : 6000);
+    return;
+}
+if (args.Length > 0 && args[0] == "--where")
+{
+    Analyze.Where(int.Parse(args[1]), float.Parse(args[2]), float.Parse(args[3]),
+                  args.Length > 4 ? float.Parse(args[4]) : 0f);
+    return;
+}
 if (args.Length > 0 && args[0] == "--polys")  { Analyze.Polys();  return; }
 if (args.Length > 0 && args[0] == "--api")    { ApiProbe.Run(args.Length > 1 ? args[1] : ""); return; }
 if (args.Length > 0 && args[0] == "--wdt")    { Analyze.WdtChunks(); return; }

@@ -526,10 +526,13 @@ public static class Analyze
             }
         }
 
-        Console.WriteLine($"{found.Count:N0} tilted placements where the two orderings visibly disagree\n");
+        var zones = new Zones(casc, build);
+
+        Console.WriteLine($"\n{found.Count:N0} tilted placements where the two orderings visibly disagree\n");
         Console.WriteLine("Fly to each and check WHICH WAY IT LEANS, not where it sits — position is");
         Console.WriteLine("nearly identical under both, only the tilt axis changes.\n");
-        Console.WriteLine($"{"#",-3} {"map",-20} {"world X, Y, Z",-26} {"tile",-9} {"size",6} {"off",7}  rot(X,Y,Z)");
+        Console.WriteLine($"{"#",-3} {"zone",-26} {"zone x,y",-14} {"size",5} {"off",6}  " +
+                          $"{"map",-18} {"world X, Y, Z",-25} rot(X,Y,Z)");
 
         int n = 0;
         var seen = new HashSet<uint>();
@@ -537,10 +540,233 @@ public static class Analyze
         {
             if (!seen.Add(f.Fdid)) continue;          // one example per distinct model
             if (++n > top) break;
-            Console.WriteLine($"{n,-3} {f.MapName,-20} {f.World.X,8:F0},{f.World.Y,8:F0},{f.World.Z,7:F0}  " +
-                              $"[{f.Row,2},{f.Col,2}]  {f.Size,5:F0}y {f.Disp,6:F0}y  " +
+            var z = zones.Locate(f.Map, f.World);
+            string where = z is { } s ? $"{s.X,5:F1},{s.Y,5:F1}" : "   — no sheet";
+            Console.WriteLine($"{n,-3} {(z?.Zone ?? "?"),-26} {where,-14} {f.Size,4:F0}y {f.Disp,5:F0}y  " +
+                              $"{f.MapName,-18} {f.World.X,7:F0},{f.World.Y,7:F0},{f.World.Z,6:F0}  " +
                               $"({f.Rot.X,6:F1},{f.Rot.Y,6:F1},{f.Rot.Z,6:F1})  wmo {f.Fdid}");
         }
+    }
+
+    /// Does the placement transform reproduce MODF's stored bounding box *at all*?
+    ///
+    /// The ordering pass compares candidates against each other, which says nothing if
+    /// they are all wrong. This measures each against zero, bucketed by how tilted the
+    /// placement is. A sound transform with a bad rotation shows a clean floor among the
+    /// untilted placements and error that grows with tilt. A floor that is already high
+    /// means the mistake is in the base transform, and no ordering will fix it.
+    public static void Extents(int limit = 6000)
+    {
+        var (casc, maps) = Open();
+
+        static Matrix4x4 Rx(float d) => Matrix4x4.CreateRotationX(d * MathF.PI / 180f);
+        static Matrix4x4 Ry(float d) => Matrix4x4.CreateRotationY(d * MathF.PI / 180f);
+        static Matrix4x4 Rz(float d) => Matrix4x4.CreateRotationZ(d * MathF.PI / 180f);
+
+        (string Name, Func<Vector3, Matrix4x4> M)[] cand =
+        [
+            ("identity",        _ => Matrix4x4.Identity),
+            ("Ry(y)",           r => Ry(r.Y)),
+            ("Rz(z)Ry(y)Rx(x)", r => Rz(r.Z) * Ry(r.Y) * Rx(r.X)),
+            ("Rz(z)Rx(x)Ry(y)", r => Rz(r.Z) * Rx(r.X) * Ry(r.Y)),
+        ];
+
+        float[] edge = [0.5f, 5f, 20f, 60f, 181f];
+        var sum = new double[edge.Length, cand.Length];
+        var cnt = new int[edge.Length];
+
+        var box = new Dictionary<uint, (Vector3 Lo, Vector3 Hi)>();
+        int used = 0;
+
+        foreach (int mapId in Maps)
+        {
+            foreach (var t in TilesOf(casc, maps, mapId).Where(t => t.Obj0 != 0))
+            {
+                List<WmoPlacement> wmos;
+                try { using var os = casc.OpenFile((int)t.Obj0); (_, wmos, _) = Obj0.Read(os); }
+                catch { continue; }
+
+                foreach (var m in wmos)
+                {
+                    if (!box.TryGetValue(m.NameId, out var b))
+                    {
+                        if (!casc.FileExists((int)m.NameId)) continue;
+                        try { using var rs = casc.OpenFile((int)m.NameId); var r = Wmo.ReadRoot(rs); b = (r.BoxMin, r.BoxMax); }
+                        catch { continue; }
+                        box[m.NameId] = b;
+                    }
+
+                    var size = m.ExtMax - m.ExtMin;
+                    if (size.X <= 0 || size.Y <= 0 || size.Z <= 0 || size.Length() > 5000) continue;
+
+                    float tilt = MathF.Max(MathF.Abs(m.RotDeg.X), MathF.Abs(m.RotDeg.Z));
+                    int bucket = 0;
+                    while (bucket < edge.Length - 1 && tilt >= edge[bucket]) bucket++;
+
+                    for (int i = 0; i < cand.Length; i++)
+                    {
+                        var mat = cand[i].M(m.RotDeg);
+                        var lo = new Vector3(float.MaxValue); var hi = new Vector3(float.MinValue);
+                        for (int c = 0; c < 8; c++)
+                        {
+                            var corner = new Vector3((c & 1) == 0 ? b.Lo.X : b.Hi.X,
+                                                     (c & 2) == 0 ? b.Lo.Y : b.Hi.Y,
+                                                     (c & 4) == 0 ? b.Lo.Z : b.Hi.Z);
+                            var p = Vector3.Transform(new Vector3(corner.Y, corner.Z, corner.X) * m.Scale, mat) + m.Pos;
+                            lo = Vector3.Min(lo, p); hi = Vector3.Max(hi, p);
+                        }
+                        var d = Vector3.Abs(lo - m.ExtMin) + Vector3.Abs(hi - m.ExtMax);
+                        sum[bucket, i] += (d.X / size.X + d.Y / size.Y + d.Z / size.Z) / 6.0;
+                    }
+                    cnt[bucket]++;
+                    if (++used >= limit) goto done;
+                }
+            }
+        }
+    done:
+        Console.WriteLine($"\n{used:N0} placements, MOHD box vs MODF extents (0 = exact)\n");
+        Console.Write($"  {"tilt",-12} {"count",7}");
+        foreach (var c in cand) Console.Write($" {c.Name,17}");
+        Console.WriteLine();
+
+        string[] label = ["none", "<5deg", "5-20deg", "20-60deg", "60deg+"];
+        for (int bk = 0; bk < edge.Length; bk++)
+        {
+            if (cnt[bk] == 0) continue;
+            Console.Write($"  {label[bk],-12} {cnt[bk],7:N0}");
+            for (int i = 0; i < cand.Length; i++) Console.Write($" {sum[bk, i] / cnt[bk],17:F4}");
+            Console.WriteLine();
+        }
+    }
+
+    /// Search the whole rotation space against MODF extents.
+    ///
+    /// --extents established that untilted placements land on 0.0001, so the oracle is
+    /// sound and the base transform is right; only the tilt is wrong. rot.Y is yaw about
+    /// Y and is not in question. That leaves which axis each of rot.X and rot.Z drives,
+    /// the sign of each, and the order of the three — 48 combinations, all cheap.
+    public static void RotSearch(int limit = 3000)
+    {
+        var (casc, maps) = Open();
+
+        static Matrix4x4 R(int axis, float deg) => axis switch
+        {
+            0 => Matrix4x4.CreateRotationX(deg * MathF.PI / 180f),
+            1 => Matrix4x4.CreateRotationY(deg * MathF.PI / 180f),
+            _ => Matrix4x4.CreateRotationZ(deg * MathF.PI / 180f),
+        };
+        string[] axisName = ["Rx", "Ry", "Rz"];
+
+        var cand = new List<(string Name, Func<Vector3, Matrix4x4> M)>();
+        foreach (int xAxis in new[] { 0, 2 })
+        {
+            int zAxis = xAxis == 0 ? 2 : 0;
+            foreach (int sx in new[] { 1, -1 })
+                foreach (int sz in new[] { 1, -1 })
+                    foreach (var order in new[] { "xyz", "xzy", "yxz", "yzx", "zxy", "zyx" })
+                    {
+                        int ax = xAxis, az = zAxis, six = sx, siz = sz;
+                        string nx = $"{axisName[ax]}({(six < 0 ? "-" : "")}x)";
+                        string ny = "Ry(y)";
+                        string nz = $"{axisName[az]}({(siz < 0 ? "-" : "")}z)";
+                        string o = order;
+
+                        Matrix4x4 Build(Vector3 r)
+                        {
+                            var m = Matrix4x4.Identity;
+                            foreach (char c in o)
+                                m *= c switch
+                                {
+                                    'x' => R(ax, six * r.X),
+                                    'y' => R(1, r.Y),
+                                    _ => R(az, siz * r.Z),
+                                };
+                            return m;
+                        }
+                        cand.Add((string.Join("*", o.Select(c => c == 'x' ? nx : c == 'y' ? ny : nz)), Build));
+                    }
+        }
+
+        var err = new double[cand.Count];
+        int used = 0;
+        var box = new Dictionary<uint, (Vector3 Lo, Vector3 Hi)>();
+
+        foreach (int mapId in Maps)
+        {
+            foreach (var t in TilesOf(casc, maps, mapId).Where(t => t.Obj0 != 0))
+            {
+                List<WmoPlacement> wmos;
+                try { using var os = casc.OpenFile((int)t.Obj0); (_, wmos, _) = Obj0.Read(os); }
+                catch { continue; }
+
+                foreach (var m in wmos)
+                {
+                    if (MathF.Max(MathF.Abs(m.RotDeg.X), MathF.Abs(m.RotDeg.Z)) < 5f) continue;
+                    if (!box.TryGetValue(m.NameId, out var b))
+                    {
+                        if (!casc.FileExists((int)m.NameId)) continue;
+                        try { using var rs = casc.OpenFile((int)m.NameId); var r = Wmo.ReadRoot(rs); b = (r.BoxMin, r.BoxMax); }
+                        catch { continue; }
+                        box[m.NameId] = b;
+                    }
+
+                    var size = m.ExtMax - m.ExtMin;
+                    if (size.X <= 0 || size.Y <= 0 || size.Z <= 0 || size.Length() > 5000) continue;
+
+                    for (int i = 0; i < cand.Count; i++)
+                    {
+                        var mat = cand[i].M(m.RotDeg);
+                        var lo = new Vector3(float.MaxValue); var hi = new Vector3(float.MinValue);
+                        for (int c = 0; c < 8; c++)
+                        {
+                            var corner = new Vector3((c & 1) == 0 ? b.Lo.X : b.Hi.X,
+                                                     (c & 2) == 0 ? b.Lo.Y : b.Hi.Y,
+                                                     (c & 4) == 0 ? b.Lo.Z : b.Hi.Z);
+                            var p = Vector3.Transform(new Vector3(corner.Y, corner.Z, corner.X) * m.Scale, mat) + m.Pos;
+                            lo = Vector3.Min(lo, p); hi = Vector3.Max(hi, p);
+                        }
+                        var d = Vector3.Abs(lo - m.ExtMin) + Vector3.Abs(hi - m.ExtMax);
+                        err[i] += (d.X / size.X + d.Y / size.Y + d.Z / size.Z) / 6.0;
+                    }
+                    if (++used >= limit) goto done;
+                }
+            }
+        }
+    done:
+        Console.WriteLine($"\n{used:N0} tilted placements, {cand.Count} candidates");
+        Console.WriteLine("untilted placements score 0.0001, so that is what a correct answer looks like\n");
+        foreach (var (c, i) in cand.Select((c, i) => (c, i)).OrderBy(p => err[p.i]).Take(12))
+            Console.WriteLine($"  {err[i] / Math.Max(used, 1),9:F5}  {c.Name}");
+    }
+
+    /// What zone is a world position in, and what does the in-game map call it? Also
+    /// prints the ADT's own area name, which comes from a different table entirely — if
+    /// the two disagree the UiMap rectangle picked is the wrong one.
+    public static void Where(int mapId, float x, float y, float z)
+    {
+        var (casc, maps) = Open();
+        string build = casc.Config.GetBuildInfoVariable("Version")!;
+        var zones = new Zones(casc, build);
+        var world = new Vector3(x, y, z);
+
+        var spot = zones.Locate(mapId, world);
+        Console.WriteLine($"\nmap {mapId}  world {x:F0}, {y:F0}, {z:F0}");
+        Console.WriteLine(spot is { } s
+            ? $"  zone map : {s.Zone}  ({s.X:F1}, {s.Y:F1})"
+            : "  zone map : no UiMap sheet covers this point");
+
+        int row = NavBake.RowOf(x), col = NavBake.ColOf(y);
+        Console.WriteLine($"  tile    : [{row},{col}]");
+
+        var tile = TilesOf(casc, maps, mapId).FirstOrDefault(t => t.X == row && t.Y == col);
+        if (tile == null || tile.Root == 0) return;
+
+        var dbd = new GithubDBDProvider();
+        var areas = new DBCD.DBCD(new One(casc, Names.Db2("AreaTable", 1353545)), dbd).Load("AreaTable", build);
+        using var rs = casc.OpenFile((int)tile.Root);
+        int area = Adt.DominantAreaId(rs);
+        Console.WriteLine($"  adt area: {area} " +
+                          $"\"{(areas.TryGetValue(area, out DBCDRow? ar) && ar != null ? ar["AreaName_lang"] : "?")}\"");
     }
 
     /// Bake every map with geometry. Resumable, so re-running continues.

@@ -48,7 +48,6 @@ public sealed class App
     int _radius;
 
     Vector2 _jump = new(0, 0);
-    (int X, int Y)? _loadedCentre;
 
     ExportJob? _job;
     CancellationTokenSource? _scan;
@@ -687,16 +686,6 @@ public sealed class App
         ImGui.SameLine();
         if (ImGui.Button("Go to world X,Y", new Vector2(-1, 0))) JumpToWorld(_jump.X, _jump.Y);
 
-        // Unresolved: see Extractor.RotationXFirst. Flipping reloads so the change shows.
-        bool xFirst = Extractor.RotationXFirst;
-        if (ImGui.Checkbox("rotation Rx*Ry*Rz", ref xFirst))
-        {
-            Extractor.RotationXFirst = xFirst;
-            if (_loadedCentre is { } lc) LoadAround(lc.X, lc.Y);
-        }
-        ImGui.SameLine();
-        ImGui.TextDisabled(xFirst ? "(alternative)" : "(default Rz*Ry*Rx)");
-
         DrawTileGrid();
     }
 
@@ -890,7 +879,6 @@ public sealed class App
 
     void LoadAround(int cx, int cy)
     {
-        _loadedCentre = (cx, cy);
         var want = new List<TileFiles>();
         for (int dy = -_radius; dy <= _radius; dy++)
             for (int dx = -_radius; dx <= _radius; dx++)

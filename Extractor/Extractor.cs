@@ -84,18 +84,21 @@ public sealed class Extractor(CASCHandler casc, Func<ushort, LiquidClass> classi
 
     /// All transforms below were derived empirically against MODF extents, inter-chunk
     /// edge continuity and doodad uprightness; see notes before changing them.
-    /// Rx/Rz ordering is UNRESOLVED: MODF extents cannot separate Rz*Ry*Rx from
-    /// Rx*Ry*Rz (53.5% vs 46.5% across 4,002 tilted placements), yet the two differ
-    /// by 12.7 yd on average and up to 252 yd. Flip this and compare a tilted WMO
-    /// against the game to settle it. Affects only placements with non-zero rot.X/Z.
-    public static bool RotationXFirst;
-
+    /// Roll, then pitch, then yaw: Rz(rot.Z) * Rx(rot.X) * Ry(rot.Y). Yaw comes last.
+    ///
+    /// Settled by --rotsearch over all 48 combinations of axis assignment, sign and order.
+    /// Against MODF extents this scores 0.0001-0.0007 at every tilt magnitude, matching
+    /// the 0.0003 floor that untilted placements set. The runners-up sit two orders of
+    /// magnitude worse: Rz*Ry*Rx, the long-standing default here, reaches 0.0860 at 60
+    /// degrees of tilt. Comparing candidates against each other had made this look like a
+    /// coin flip for months — they were all wrong, which is what --extents exposed by
+    /// scoring each against zero instead.
     static Matrix4x4 Rotation(Vector3 deg)
     {
         var rx = Matrix4x4.CreateRotationX(deg.X * MathF.PI / 180f);
         var ry = Matrix4x4.CreateRotationY(deg.Y * MathF.PI / 180f);
         var rz = Matrix4x4.CreateRotationZ(deg.Z * MathF.PI / 180f);
-        return RotationXFirst ? rx * ry * rz : rz * ry * rx;
+        return rz * rx * ry;
     }
 
     /// detailStep 1 is full resolution; higher values decimate terrain for overviews.
